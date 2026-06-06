@@ -1,0 +1,386 @@
+import kivy
+from kivy.app import App
+from kivy.uix.boxlayout import BoxLayout
+from kivy.uix.label import Label
+from kivy.uix.button import Button
+from kivy.uix.scrollview import ScrollView
+from kivy.uix.textinput import TextInput
+from kivy.network.urlrequest import UrlRequest
+from kivy.graphics import Color, RoundedRectangle
+from datetime import datetime, timedelta
+import math
+import ssl
+
+try:
+    ssl._create_default_https_context = ssl._create_unverified_context
+except AttributeError:
+    pass
+
+MINHA_API_KEY = "cb68bec4ddaf9f52abed04e245718776"
+
+class JogoCard(BoxLayout):
+    def __init__(self, time_casa, time_fora, status, palpite_p, palpite_g, modo_aba="hoje", resultado_vencedor=None, resultado_golos=None, ao_v_pressao=False, **kwargs):
+        super(JogoCard, self).__init__(**kwargs)
+        self.orientation = 'vertical'
+        self.size_hint_y = None
+        self.height = 150  
+        self.padding = 10
+        self.spacing = 5
+        
+        with self.canvas.before:
+            Color(0.13, 0.13, 0.16, 1)
+            self.rect = RoundedRectangle(pos=self.pos, size=self.size, radius=[12])
+        self.bind(pos=self.atualizar_retangulo, size=self.atualizar_retangulo)
+
+        topo_layout = BoxLayout(orientation='horizontal', size_hint_y=None, height=25, spacing=5)
+        lbl_status = Label(text=status, font_size='11sp', bold=True, halign='left', color=(0.9, 0.9, 0.9, 1))
+        lbl_status.bind(size=lbl_status.setter('text_size'))
+        topo_layout.add_widget(lbl_status)
+
+        if modo_aba == "hoje" and ao_v_pressao:
+            lbl_pressao = Label(text="🔥 PRESSÃO", font_size='11sp', color=(1, 0.3, 0.1, 1), bold=True, halign='right', size_hint_x=None, width=100)
+            lbl_pressao.bind(size=lbl_pressao.setter('text_size'))
+            topo_layout.add_widget(lbl_pressao)
+        elif modo_aba == "ontem":
+            quadrados_container = BoxLayout(orientation='horizontal', size_hint_x=None, width=75, spacing=5)
+            quad_vencedor = Button(text="1X2", font_size='9sp', bold=True, size_hint=(None, None), size=(32, 20), disabled=True)
+            quad_vencedor.background_disabled_normal = ''
+            quad_vencedor.background_color = (0.1, 0.7, 0.2, 1) if resultado_vencedor == "green" else (0.8, 0.1, 0.1, 1)
+            
+            quad_golos = Button(text="GOL", font_size='9sp', bold=True, size_hint=(None, None), size=(32, 20), disabled=True)
+            quad_golos.background_disabled_normal = ''
+            quad_golos.background_color = (0.1, 0.7, 0.2, 1) if resultado_golos == "green" else (0.8, 0.1, 0.1, 1)
+            
+            quadrados_container.add_widget(quad_vencedor)
+            quadrados_container.add_widget(quad_golos)
+            topo_layout.add_widget(quadrados_container)
+
+        self.add_widget(topo_layout)
+
+        lbl_equipas = Label(text=f"{time_casa}  vs  {time_fora}", font_size='15sp', bold=True, halign='center', size_hint_y=None, height=28)
+        lbl_equipas.bind(size=lbl_equipas.setter('text_size'))
+        self.add_widget(lbl_equipas)
+
+        lbl_palpite1 = Label(text=palpite_p, font_size='12sp', color=(0.2, 0.8, 1, 1), halign='left', size_hint_y=None, height=20)
+        lbl_palpite1.bind(size=lbl_palpite1.setter('text_size'))
+        self.add_widget(lbl_palpite1)
+
+        lbl_palpite2 = Label(text=palpite_g, font_size='11sp', color=(0.2, 1, 0.6, 1), halign='left', size_hint_y=None, height=20)
+        lbl_palpite2.bind(size=lbl_palpite2.setter('text_size'))
+        self.add_widget(lbl_palpite2)
+
+    def atualizar_retangulo(self, instance, value):
+        self.rect.pos, self.rect.size = self.pos, self.size
+
+class PredictorHome(BoxLayout):
+    def __init__(self, **kwargs):
+        super(PredictorHome, self).__init__(**kwargs)
+        self.orientation = 'vertical'
+        self.padding = 8
+        self.spacing = 8
+        
+        with self.canvas.before:
+            Color(0.07, 0.07, 0.09, 1)
+            self.bg = RoundedRectangle(pos=self.pos, size=self.size)
+        self.bind(pos=self.atualizar_bg, size=self.atualizar_bg)
+
+        # NAVEGAÇÃO PRINCIPAL
+        self.linha_tempo = BoxLayout(size_hint_y=None, height=50, spacing=6)
+        self.btn_hoje = Button(text="📅 PALPITES DE HOJE", bold=True, font_size='12sp', background_color=(0, 0.4, 0.8, 1))
+        self.btn_ontem = Button(text="📊 BALANÇO ONTEM", bold=True, font_size='12sp', background_color=(0.18, 0.18, 0.22, 1))
+        self.btn_atualizar = Button(text="🔄", bold=True, font_size='14sp', size_hint_x=None, width=50, background_color=(0.1, 0.5, 0.25, 1))
+        
+        self.btn_hoje.bind(on_press=self.ir_para_hoje)
+        self.btn_ontem.bind(on_press=self.ir_para_ontem)
+        self.btn_atualizar.bind(on_press=self.forcar_atualizacao)
+        
+        self.linha_tempo.add_widget(self.btn_hoje)
+        self.linha_tempo.add_widget(self.btn_ontem)
+        self.linha_tempo.add_widget(self.btn_atualizar)
+        self.add_widget(self.linha_tempo)
+
+        # FILTROS TÁTICOS
+        self.linha_filtros = BoxLayout(size_hint_y=None, height=42, spacing=5)
+        self.btn_f_mundo = Button(text="🌍 Mundo", bold=True, font_size='11sp', background_color=(0, 0.5, 0.6, 1))
+        self.btn_f_melhores = Button(text="🔥 Melhores", bold=True, font_size='11sp', background_color=(0.14, 0.14, 0.17, 1))
+        self.btn_f_golos = Button(text="⚽ Golos", bold=True, font_size='11sp', background_color=(0.14, 0.14, 0.17, 1))
+        self.btn_f_trancados = Button(text="🛡️ Trancados", bold=True, font_size='11sp', background_color=(0.14, 0.14, 0.17, 1))
+
+        self.btn_f_mundo.bind(on_press=lambda x: self.mudar_sub_filtro("mundo"))
+        self.btn_f_melhores.bind(on_press=lambda x: self.mudar_sub_filtro("melhores"))
+        self.btn_f_golos.bind(on_press=lambda x: self.mudar_sub_filtro("festival_golos"))
+        self.btn_f_trancados.bind(on_press=lambda x: self.mudar_sub_filtro("jogos_trancados"))
+
+        for b in [self.btn_f_mundo, self.btn_f_melhores, self.btn_f_golos, self.btn_f_trancados]:
+            self.linha_filtros.add_widget(b)
+        self.add_widget(self.linha_filtros)
+
+        # PESQUISA
+        self.campo_pesquisa = TextInput(
+            hint_text="🔍 Digite uma equipa ou liga para pesquisar...", multiline=False, size_hint_y=None, height=42,
+            font_size='13sp', background_color=(0.14, 0.14, 0.17, 1), foreground_color=(1, 1, 1, 1),
+            hint_text_color=(0.5, 0.5, 0.5, 1), padding=[10, 10, 10, 10]
+        )
+        self.campo_pesquisa.bind(text=self.filtrar_por_texto_digitado)
+        self.add_widget(self.campo_pesquisa)
+
+        # ÁREA DINÂMICA
+        self.scroll = ScrollView(size_hint=(1, 1))
+        self.container_dinamico = BoxLayout(orientation='vertical', size_hint_y=None, spacing=10)
+        self.container_dinamico.bind(minimum_height=self.container_dinamico.setter('height'))
+        
+        self.lbl_mensagem = Label(text="Sincronize para carregar os dados.", font_size='14sp', color=(0.6, 0.6, 0.6, 1), size_hint_y=None, height=60)
+        self.container_dinamico.add_widget(self.lbl_mensagem)
+        self.scroll.add_widget(self.container_dinamico)
+        self.add_widget(self.scroll)
+
+        # Memória de Controlo
+        self.modo_aba = "hoje"
+        self.filtro_tatico = "mundo"
+        self.liga_selecionada = None
+        self.lista_jogos_memoria = []
+        self.cache_hoje, self.cache_ontem = None, None
+        self.tempo_hoje, self.tempo_ontem = None, None
+
+    def atualizar_bg(self, instance, value): 
+        self.bg.pos, self.bg.size = self.pos, self.size
+
+    def ir_para_hoje(self, instance):
+        self.modo_aba = "hoje"
+        self.btn_hoje.background_color = (0, 0.4, 0.8, 1)
+        self.btn_ontem.background_color = (0.18, 0.18, 0.22, 1)
+        self.liga_selecionada = None
+        self.limpar_e_recarregar()
+
+    def ir_para_ontem(self, instance):
+        self.modo_aba = "ontem"
+        self.btn_ontem.background_color = (0, 0.4, 0.8, 1)
+        self.btn_hoje.background_color = (0.18, 0.18, 0.22, 1)
+        self.liga_selecionada = None
+        self.limpar_e_recarregar()
+
+    def mudar_sub_filtro(self, filtro):
+        self.filtro_tatico = filtro
+        self.liga_selecionada = None  
+        for b in [self.btn_f_mundo, self.btn_f_melhores, self.btn_f_golos, self.btn_f_trancados]:
+            b.background_color = (0.14, 0.14, 0.17, 1)
+        if filtro == "mundo": self.btn_f_mundo.background_color = (0, 0.5, 0.6, 1)
+        elif filtro == "melhores": self.btn_f_melhores.background_color = (0, 0.5, 0.6, 1)
+        elif filtro == "festival_golos": self.btn_f_golos.background_color = (0, 0.5, 0.6, 1)
+        elif filtro == "jogos_trancados": self.btn_f_trancados.background_color = (0, 0.5, 0.6, 1)
+        
+        self.scroll.scroll_y = 1.0
+        self.container_dinamico.clear_widgets()
+        if self.modo_aba == "hoje" and self.cache_hoje:
+            self.filtrar_e_preparar_dados(self.cache_hoje)
+        elif self.modo_aba == "ontem" and self.cache_ontem:
+            self.filtrar_e_preparar_dados(self.cache_ontem)
+
+    def forcar_atualizacao(self, instance):
+        if self.modo_aba == "hoje": self.cache_hoje = None
+        else: self.cache_ontem = None
+        self.liga_selecionada = None
+        self.limpar_e_recarregar()
+
+    def limpar_e_recarregar(self):
+        self.campo_pesquisa.text = ""
+        self.scroll.scroll_y = 1.0
+        self.container_dinamico.clear_widgets()
+        self.lista_jogos_memoria.clear()
+        self.processar_requisicao_dados()
+
+    def processar_requisicao_dados(self):
+        agora = datetime.now()
+        if self.modo_aba == "hoje":
+            if self.cache_hoje and self.tempo_hoje and (agora - self.tempo_hoje) < timedelta(minutes=5):
+                self.filtrar_e_preparar_dados(self.cache_hoje)
+                return
+            data_alvo = agora.strftime('%Y-%m-%d')
+        else:
+            if self.cache_ontem and self.tempo_ontem:
+                self.filtrar_e_preparar_dados(self.cache_ontem)
+                return
+            data_alvo = (agora - timedelta(days=1)).strftime('%Y-%m-%d')
+
+        self.container_dinamico.clear_widgets()
+        self.lbl_mensagem.text = "⏳ Sincronizando dados globais..."
+        self.container_dinamico.add_widget(self.lbl_mensagem)
+        
+        UrlRequest(
+            f"https://v3.football.api-sports.io/fixtures?date={data_alvo}",
+            on_success=self.armazenar_dados_cache, on_failure=self.erro_comunicacao, on_error=self.erro_comunicacao,
+            req_headers={'x-rapidapi-host': 'v3.football.api-sports.io', 'x-rapidapi-key': MINHA_API_KEY}
+        )
+
+    def armazenar_dados_cache(self, req, resultado):
+        if resultado and resultado.get('response'):
+            if self.modo_aba == "hoje":
+                self.cache_hoje, self.tempo_hoje = resultado, datetime.now()
+            else:
+                self.cache_ontem, self.tempo_ontem = resultado, datetime.now()
+        self.filtrar_e_preparar_dados(resultado)
+
+    def calcular_motor_poisson(self, jogo):
+        h, a = jogo.get('teams', {}).get('home', {}), jogo.get('teams', {}).get('away', {})
+        fc, ff = h.get('form', '') or '', a.get('form', '') or ''
+        
+        if not fc or not ff or len(fc) < 3 or len(ff) < 3:
+            lh, la = 1.35, 1.10
+        else:
+            vc, ec = fc.count('W'), fc.count('D')
+            vf, ef = ff.count('W'), ff.count('D')
+            lh = 1.0 + (vc * 0.12) + (ec * 0.04) + 0.20
+            la = 0.9 + (vf * 0.10) + (ef * 0.03)
+            lh = max(0.7, min(2.2, lh))
+            la = max(0.6, min(1.9, la))
+
+        p_poisson = lambda k, l: (math.pow(l, k) * math.exp(-l)) / math.factorial(k)
+        p_casa, p_emp, p_fora, p_m25, p_am = 0.0, 0.0, 0.0, 0.0, 0.0
+        for gc in range(4):
+            for gf in range(4):
+                pp = p_poisson(gc, lh) * p_poisson(gf, la)
+                if gc > gf: p_casa += pp
+                elif gc == gf: p_emp += pp
+                else: p_fora += pp
+                if (gc + gf) > 2: p_m25 += pp
+                if gc > 0 and gf > 0: p_am += pp
+                
+        tot = p_casa + p_emp + p_fora or 1
+        pc, pe = int((p_casa/tot)*100), int((p_emp/tot)*100)
+        return pc, pe, 100 - pc - pe, int(p_m25*100), int(p_am*100)
+
+    def filtrar_e_preparar_dados(self, resultado):
+        self.container_dinamico.clear_widgets()
+        self.lista_jogos_memoria.clear()
+        
+        if not resultado or not resultado.get('response') or len(resultado['response']) == 0:
+            self.lbl_mensagem.text = "Nenhum palpite disponível."
+            self.container_dinamico.add_widget(self.lbl_mensagem)
+            return
+
+        total_palpites_avaliados, total_greens = 0, 0
+
+        for item in resultado['response']:
+            status_api = item['fixture']['status']['short']
+            
+            # FILTRO CRÍTICO: Se estamos a ver palpites de HOJE, ignora jogos já terminados (FT)
+            if self.modo_aba == "hoje" and status_api == "FT":
+                continue
+
+            nome_liga_original = item['league']['name'].upper()
+            pc, pe, pf, po, pb = self.calcular_motor_poisson(item)
+            
+            if pc >= 48:
+                p1, vencedor_esperado = f"📊 IA: Vitória {item['teams']['home']['name']} ({pc}%) | X: {pe}%", "casa"
+            elif pf >= 48:
+                p1, vencedor_esperado = f"📊 IA: Vitória {item['teams']['away']['name']} ({pf}%) | X: {pe}%", "fora"
+            else:
+                vencedor_esperado = "dupla_casa" if pc >= pf else "dupla_fora"
+                p1 = f"🛡️ DUPLA: {item['teams']['home']['name'] if pc>=pf else item['teams']['away']['name']} ou Empate ({pc+pe if pc>=pf else pf+pe}%)"
+                
+            p2 = f"🎯 GOLOS: {'+2.5' if po>45 else '-2.5'} ({po if po>45 else 100-po}%) | ⚽ AMBAS: {'SIM' if pb>45 else 'NÃO'} ({pb}%)"
+            
+            ao_vivo_pressao = False
+            if self.modo_aba == "hoje" and status_api in ["1H", "2H"]:
+                elap = item['fixture']['status']['elapsed'] or 0
+                if elap > 70 and (pc > 40 or pf > 40): ao_vivo_pressao = True
+
+            resultado_vencedor, resultado_golos = "red", "red"
+            if self.modo_aba == "ontem" and status_api == "FT":
+                gc = item['goals']['home'] if item['goals']['home'] is not None else 0
+                gf = item['goals']['away'] if item['goals']['away'] is not None else 0
+                if vencedor_esperado == "casa" and gc > gf: resultado_vencedor = "green"
+                elif vencedor_esperado == "fora" and gf > gc: resultado_vencedor = "green"
+                elif vencedor_esperado == "dupla_casa" and gc >= gf: resultado_vencedor = "green"
+                elif vencedor_esperado == "dupla_fora" and gf >= gc: resultado_vencedor = "green"
+                
+                if po > 45 and (gc+gf) > 2: resultado_golos = "green"
+                elif po <= 45 and (gc+gf) <= 2: resultado_golos = "green"
+                
+                total_palpites_avaliados += 2
+                if resultado_vencedor == "green": total_greens += 1
+                if resultado_golos == "green": total_greens += 1
+
+            self.lista_jogos_memoria.append({
+                'item': item, 'p1': p1, 'p2': p2, 'pc': pc, 'pf': pf, 'po_aj': po, 'liga': nome_liga_original,
+                'status_texto': self.formatar_status_jogo(item),
+                'res_vencedor': resultado_vencedor, 'res_golos': resultado_golos, 'pressao': ao_vivo_pressao
+            })
+
+        # ADICIONA BALANÇO SE FOR ONTEM
+        if self.modo_aba == "ontem" and total_palpites_avaliados > 0:
+            taxa = int((total_greens / total_palpites_avaliados) * 100)
+            self.container_dinamico.add_widget(Label(
+                text=f"📊 BALANÇO: ✅ {total_greens} GREENS | ❌ {total_palpites_avaliados - total_greens} REDS | 🎯 {taxa}% ACERTO",
+                font_size='13sp', bold=True, color=(0.2, 1, 0.5, 1), size_hint_y=None, height=35
+            ))
+
+        # EXIBIÇÃO DE DADOS POR ABA FILTRADA
+        if not self.lista_jogos_memoria:
+            self.lbl_mensagem.text = "Sem jogos ativos/agendados para este filtro."
+            self.container_dinamico.add_widget(self.lbl_mensagem)
+            return
+
+        if self.filtro_tatico == "mundo":
+            if self.liga_selecionada is None:
+                self.renderizar_lista_de_ligas()
+            else:
+                self.renderizar_jogos_da_liga_selecionada()
+                
+        elif self.filtro_tatico == "melhores":
+            super_escolhidos = sorted(self.lista_jogos_memoria, key=lambda x: max(x['pc'], x['pf']), reverse=True)[:5]
+            dez_melhores = sorted(self.lista_jogos_memoria, key=lambda x: max(x['pc'], x['pf'], x['po_aj']), reverse=True)[:10]
+            
+            self.container_dinamico.add_widget(Label(text="🔥 OS 5 SUPER ESCOLHIDOS (MAIOR CHANCE VITORIA)", font_size='12sp', bold=True, color=(1, 0.8, 0, 1), size_hint_y=None, height=30))
+            for j in super_escolhidos:
+                self.adicionar_card_jogo_direto(j)
+                
+            self.container_dinamico.add_widget(Label(text="📊 OS 10 MELHORES JOGOS GERAIS DO DIA", font_size='12sp', bold=True, color=(0.2, 0.8, 1, 1), size_hint_y=None, height=30))
+            for j in dez_melhores:
+                self.adicionar_card_jogo_direto(j)
+
+        elif self.filtro_tatico == "festival_golos":
+            principais_golos = sorted(self.lista_jogos_memoria, key=lambda x: x['po_aj'], reverse=True)[:10]
+            self.container_dinamico.add_widget(Label(text="⚽ OS 10 PRINCIPAIS JOGOS DE GOLOS (+2.5)", font_size='12sp', bold=True, color=(0.2, 1, 0.6, 1), size_hint_y=None, height=30))
+            for j in principais_golos:
+                self.adicionar_card_jogo_direto(j)
+
+        elif self.filtro_tatico == "jogos_trancados":
+            trancados = sorted(self.lista_jogos_memoria, key=lambda x: x['po_aj'], reverse=False)[:10]
+            self.container_dinamico.add_widget(Label(text="🛡️ OS 10 JOGOS MAIS TRANCADOS (-2.5 GOLOS)", font_size='12sp', bold=True, color=(0.8, 0.2, 0.2, 1), size_hint_y=None, height=30))
+            for j in trancados:
+                self.adicionar_card_jogo_direto(j)
+
+    def adicionar_card_jogo_direto(self, j):
+        status_com_liga = f"🏆 {j['liga']} | {j['status_texto']}"
+        self.container_dinamico.add_widget(JogoCard(
+            j['item']['teams']['home']['name'], j['item']['teams']['away']['name'], status_com_liga, j['p1'], j['p2'],
+            modo_aba=self.modo_aba, resultado_vencedor=j['res_vencedor'], resultado_golos=j['res_golos'], ao_v_pressao=j['pressao']
+        ))
+
+    def renderizar_lista_de_ligas(self):
+        ligas_unicas = sorted(list(set([j['liga'] for j in self.lista_jogos_memoria])))
+        self.container_dinamico.add_widget(Label(text="🌍 LIGAS DISPONÍVEIS:", font_size='12sp', bold=True, color=(0.2, 0.8, 1, 1), size_hint_y=None, height=25))
+        for liga in ligas_unicas:
+            qtd_jogos = len([j for j in self.lista_jogos_memoria if j['liga'] == liga])
+            btn_liga = Button(
+                text=f"🏆 {liga} ({qtd_jogos} Jogos)", font_size='13sp', bold=True,
+                size_hint_y=None, height=45, background_color=(0.14, 0.14, 0.17, 1)
+            )
+            btn_liga.bind(on_press=lambda instance, l=liga: self.abrir_jogos_da_liga(l))
+            self.container_dinamico.add_widget(btn_liga)
+
+    def renderizar_jogos_da_liga_selecionada(self):
+        btn_voltar = Button(
+            text=f"⬅️ VOLTAR PARA LISTA DE LIGAS ({self.liga_selecionada})", font_size='12sp', bold=True,
+            size_hint_y=None, height=40, background_color=(0.8, 0.2, 0.2, 1)
+        )
+        btn_voltar.bind(on_press=self.voltar_para_ligas)
+        self.container_dinamico.add_widget(btn_voltar)
+
+        jogos_filtrados = [j for j in self.lista_jogos_memoria if j['liga'] == self.liga_selecionada]
+        for j in jogos_filtrados:
+            self.adicionar_card_jogo_direto(j)
+
+    def abrir_jogos_da_liga(self, nome_liga):
+        self.liga_s
